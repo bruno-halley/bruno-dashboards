@@ -1,0 +1,909 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Teramot Dashboard Deployer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 500: '#6366f1', 600: '#4f46e5' }
+          }
+        }
+      }
+    }
+  </script>
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; }
+    .spin { animation: spin 1s linear infinite; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen">
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, useMemo } = React;
+
+// ── GitHub API ──────────────────────────────────────────────────────────────
+
+const GH = 'https://api.github.com';
+
+function ghHeaders(token) {
+  return {
+    Authorization: `Bearer ${token}`,
+    Accept: 'application/vnd.github.v3+json',
+    'Content-Type': 'application/json',
+  };
+}
+
+async function ghGet(token, repo, path) {
+  const res = await fetch(`${GH}/repos/${repo}/contents/${path}`, {
+    headers: ghHeaders(token),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  return data;
+}
+
+async function ghPut(token, repo, path, htmlContent, sha, message) {
+  // Unicode-safe base64
+  const bytes = new TextEncoder().encode(htmlContent);
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  const content = btoa(bin);
+
+  const body = { message, content };
+  if (sha) body.sha = sha;
+
+  return fetch(`${GH}/repos/${repo}/contents/${path}`, {
+    method: 'PUT',
+    headers: ghHeaders(token),
+    body: JSON.stringify(body),
+  });
+}
+
+async function ghDelete(token, repo, path, sha) {
+  return fetch(`${GH}/repos/${repo}/contents/${path}`, {
+    method: 'DELETE',
+    headers: ghHeaders(token),
+    body: JSON.stringify({ message: `remove: ${path}`, sha }),
+  });
+}
+
+async function ghListDir(token, repo, path) {
+  const res = await fetch(`${GH}/repos/${repo}/contents/${path}`, {
+    headers: ghHeaders(token),
+  });
+  if (!res.ok) return [];
+  const data = await res.json();
+  return Array.isArray(data) ? data : [];
+}
+
+// ── Utilities ────────────────────────────────────────────────────────────────
+
+function toSlug(name) {
+  return name
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9\s-]/g, '')
+    .trim()
+    .replace(/\s+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+}
+
+function ghpUrl(repo, slug) {
+  const [owner, repoName] = repo.split('/');
+  return `https://${owner}.github.io/${repoName}/dashboards/${slug}/index.html`;
+}
+
+function formatSlug(slug) {
+  return slug
+    .split('-')
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch { return false; }
+}
+
+// ── SVG Icons ────────────────────────────────────────────────────────────────
+
+const Ico = {
+  Upload: () => <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>,
+  Eye: ({off}) => off
+    ? <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l3.59 3.59m0 0A9.953 9.953 0 0112 5c4.478 0 8.268 2.943 9.543 7a10.025 10.025 0 01-4.132 5.411m0 0L21 21"/></svg>
+    : <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/><path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/></svg>,
+  Copy: () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>,
+  Check: () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>,
+  Trash: () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>,
+  Settings: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>,
+  Link: () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/></svg>,
+  Refresh: () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg>,
+  X: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12"/></svg>,
+  File: () => <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}><path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>,
+  Logo: () => <svg className="w-5 h-5 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" strokeLinejoin="round"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>,
+  Spinner: ({cls = 'w-5 h-5'}) => <svg className={`spin ${cls}`} xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>,
+};
+
+// ── Setup Screen ─────────────────────────────────────────────────────────────
+
+function SetupScreen({ onSave }) {
+  const [token, setToken] = useState('');
+  const [repo, setRepo]   = useState('');
+  const [showTok, setShowTok] = useState(false);
+  const [error, setError] = useState('');
+  const [busy, setBusy]   = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError('');
+    if (!token.trim()) return setError('Enter a GitHub token');
+    if (!repo.includes('/')) return setError('Repo must be in owner/repo format');
+    setBusy(true);
+    try {
+      const res = await fetch(`${GH}/repos/${repo.trim()}`, {
+        headers: { Authorization: `Bearer ${token.trim()}` },
+      });
+      if (res.status === 401) return setError('Invalid token — check scopes');
+      if (res.status === 404) return setError('Repo not found or token has no access');
+      if (!res.ok) return setError(`GitHub error: ${res.status}`);
+      onSave({ token: token.trim(), repo: repo.trim() });
+    } catch {
+      setError('Network error');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
+      <div className="w-full max-w-md">
+        {/* Brand */}
+        <div className="text-center mb-8">
+          <div className="w-16 h-16 bg-indigo-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-900/50">
+            <Ico.Logo />
+          </div>
+          <h1 className="text-2xl font-bold text-white">Dashboard Deployer</h1>
+          <p className="text-slate-400 mt-1.5 text-sm">by Teramot — powered by GitHub Pages</p>
+        </div>
+
+        <form onSubmit={submit} className="bg-slate-800 rounded-2xl p-6 border border-slate-700 space-y-5">
+          {/* Token */}
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              GitHub Personal Access Token
+            </label>
+            <div className="relative">
+              <input
+                type={showTok ? 'text' : 'password'}
+                value={token}
+                onChange={e => setToken(e.target.value)}
+                placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                autoComplete="off"
+                className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 pr-11 text-slate-100 placeholder-slate-600 font-mono text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowTok(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300 transition-colors"
+              >
+                <Ico.Eye off={showTok} />
+              </button>
+            </div>
+            <p className="text-xs text-slate-500 mt-1.5">
+              Needs <span className="bg-slate-700 text-slate-300 px-1 py-0.5 rounded font-mono">Contents: Read &amp; Write</span> on the destination repo
+            </p>
+          </div>
+
+          {/* Repo */}
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Destination Repository
+            </label>
+            <input
+              type="text"
+              value={repo}
+              onChange={e => setRepo(e.target.value)}
+              placeholder="owner/repository"
+              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 placeholder-slate-600 font-mono text-sm focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+            />
+            <p className="text-xs text-slate-500 mt-1.5">
+              Must have GitHub Pages enabled from the <span className="font-mono bg-slate-700 text-slate-300 px-1 py-0.5 rounded">main</span> branch
+            </p>
+          </div>
+
+          {error && (
+            <div className="bg-red-950 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-3">
+              {error}
+            </div>
+          )}
+
+          <button
+            type="submit"
+            disabled={busy}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed text-white font-medium py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            {busy ? <><Ico.Spinner /> Verifying...</> : 'Connect & Save'}
+          </button>
+        </form>
+
+        <p className="text-center text-xs text-slate-600 mt-4">
+          Your token is stored only in your browser's localStorage — never sent anywhere except GitHub.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+// ── Preview Modal ─────────────────────────────────────────────────────────────
+
+function PreviewModal({ html, onClose }) {
+  const blobUrl = useMemo(() => {
+    const blob = new Blob([html], { type: 'text/html' });
+    return URL.createObjectURL(blob);
+  }, [html]);
+
+  useEffect(() => () => URL.revokeObjectURL(blobUrl), [blobUrl]);
+
+  useEffect(() => {
+    const handler = e => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [onClose]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex flex-col bg-slate-950">
+      <div className="flex items-center justify-between px-4 py-3 bg-slate-900 border-b border-slate-700 shrink-0">
+        <span className="text-sm font-medium text-slate-300">Preview</span>
+        <button
+          onClick={onClose}
+          className="text-slate-400 hover:text-slate-100 transition-colors"
+        >
+          <Ico.X />
+        </button>
+      </div>
+      <iframe
+        src={blobUrl}
+        className="flex-1 w-full border-0"
+        title="Dashboard Preview"
+        sandbox="allow-scripts allow-same-origin"
+      />
+    </div>
+  );
+}
+
+// ── Deploy Tab ────────────────────────────────────────────────────────────────
+
+function DeployTab({ config, onDeployed }) {
+  const [html, setHtml]           = useState(null);
+  const [fileName, setFileName]   = useState('');
+  const [name, setName]           = useState('');
+  const [isDragging, setIsDragging] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const [busy, setBusy]           = useState(false);
+  const [result, setResult]       = useState(null);
+  const [error, setError]         = useState('');
+  const [copied, setCopied]       = useState(false);
+  const fileRef = useRef();
+
+  const slug = toSlug(name);
+  const previewUrl = slug ? ghpUrl(config.repo, slug) : '';
+
+  function loadFile(file) {
+    if (!file) return;
+    if (!file.name.toLowerCase().endsWith('.html')) {
+      setError('Please select an HTML file (.html)');
+      return;
+    }
+    setError('');
+    const reader = new FileReader();
+    reader.onload = e => {
+      setHtml(e.target.result);
+      setFileName(file.name);
+      setName(file.name.replace(/\.html?$/i, '').replace(/[-_]/g, ' ').trim());
+      setResult(null);
+    };
+    reader.readAsText(file, 'UTF-8');
+  }
+
+  function onDrop(e) {
+    e.preventDefault();
+    setIsDragging(false);
+    loadFile(e.dataTransfer.files[0]);
+  }
+
+  async function deploy() {
+    if (!html || !slug) return;
+    setBusy(true);
+    setError('');
+    const path = `dashboards/${slug}/index.html`;
+    try {
+      const existing = await ghGet(config.token, config.repo, path);
+      const sha = existing?.sha;
+      const res = await ghPut(config.token, config.repo, path, html, sha, `deploy: ${slug}`);
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setError(data.message || `Deploy failed (${res.status})`);
+      } else {
+        setResult({ url: ghpUrl(config.repo, slug), name });
+        onDeployed();
+      }
+    } catch {
+      setError('Network error — check your connection');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleCopy() {
+    if (!result) return;
+    const ok = await copyText(result.url);
+    if (ok) { setCopied(true); setTimeout(() => setCopied(false), 2000); }
+  }
+
+  // ── Success state
+  if (result) {
+    return (
+      <div className="max-w-lg mx-auto text-center py-12">
+        <div className="w-16 h-16 bg-green-500/15 rounded-full flex items-center justify-center mx-auto mb-5">
+          <svg className="w-8 h-8 text-green-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/>
+          </svg>
+        </div>
+        <h3 className="text-xl font-semibold text-white mb-1">Deployed!</h3>
+        <p className="text-slate-400 text-sm mb-8">
+          GitHub Pages may take ~30 seconds to reflect changes.
+        </p>
+
+        <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 mb-6 text-left">
+          <p className="text-xs text-slate-500 mb-2 font-medium uppercase tracking-wide">Dashboard URL</p>
+          <div className="flex items-start gap-2">
+            <code className="flex-1 text-indigo-300 text-sm break-all leading-relaxed">{result.url}</code>
+            <div className="flex gap-1 shrink-0 mt-0.5">
+              <button
+                onClick={handleCopy}
+                title="Copy URL"
+                className="p-1.5 text-slate-400 hover:text-slate-100 hover:bg-slate-700 rounded-md transition-colors"
+              >
+                {copied ? <Ico.Check /> : <Ico.Copy />}
+              </button>
+              <a
+                href={result.url}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open in new tab"
+                className="p-1.5 text-slate-400 hover:text-slate-100 hover:bg-slate-700 rounded-md transition-colors"
+              >
+                <Ico.Link />
+              </a>
+            </div>
+          </div>
+        </div>
+
+        <button
+          onClick={() => { setHtml(null); setFileName(''); setName(''); setResult(null); setError(''); }}
+          className="text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+        >
+          Deploy another dashboard →
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto space-y-4">
+      {/* Drop zone */}
+      <div
+        onDragEnter={e => { e.preventDefault(); setIsDragging(true); }}
+        onDragOver={e => e.preventDefault()}
+        onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget)) setIsDragging(false); }}
+        onDrop={onDrop}
+        onClick={() => fileRef.current?.click()}
+        className={[
+          'relative border-2 border-dashed rounded-2xl p-10 text-center cursor-pointer transition-all select-none',
+          isDragging
+            ? 'border-indigo-400 bg-indigo-500/10 scale-[1.01]'
+            : html
+            ? 'border-slate-600 bg-slate-800/50 hover:border-slate-500'
+            : 'border-slate-700 bg-slate-800/30 hover:border-slate-600 hover:bg-slate-800/50',
+        ].join(' ')}
+      >
+        <input
+          ref={fileRef}
+          type="file"
+          accept=".html,.htm"
+          className="hidden"
+          onChange={e => loadFile(e.target.files[0])}
+          onClick={e => e.stopPropagation()}
+        />
+
+        {html ? (
+          <div className="flex items-center gap-4">
+            <div className="text-indigo-400 shrink-0"><Ico.File /></div>
+            <div className="flex-1 text-left min-w-0">
+              <p className="font-medium text-slate-200 truncate">{fileName}</p>
+              <p className="text-sm text-slate-500">{(html.length / 1024).toFixed(1)} KB — click to replace</p>
+            </div>
+            <button
+              onClick={e => { e.stopPropagation(); setShowPreview(true); }}
+              className="shrink-0 flex items-center gap-1.5 text-sm bg-slate-700 hover:bg-slate-600 text-slate-200 px-3 py-1.5 rounded-lg transition-colors"
+            >
+              <Ico.Eye /> Preview
+            </button>
+          </div>
+        ) : (
+          <>
+            <div className="w-14 h-14 bg-slate-700 rounded-2xl flex items-center justify-center mx-auto mb-4 text-slate-300">
+              <Ico.Upload />
+            </div>
+            <p className="text-slate-200 font-medium mb-1">Drop your HTML file here</p>
+            <p className="text-slate-500 text-sm">or click to browse</p>
+          </>
+        )}
+      </div>
+
+      {error && (
+        <div className="bg-red-950 border border-red-800 text-red-300 text-sm rounded-xl px-4 py-3">
+          {error}
+        </div>
+      )}
+
+      {/* Name + Deploy */}
+      {html && (
+        <div className="bg-slate-800 border border-slate-700 rounded-2xl p-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">
+              Dashboard Name
+            </label>
+            <input
+              type="text"
+              value={name}
+              onChange={e => setName(e.target.value)}
+              placeholder="My Awesome Dashboard"
+              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 placeholder-slate-600 focus:outline-none focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+            />
+          </div>
+
+          {slug && (
+            <div className="bg-slate-900 rounded-lg px-3 py-2.5 text-xs font-mono break-all">
+              <span className="text-slate-500">URL: </span>
+              <span className="text-indigo-300">{previewUrl}</span>
+            </div>
+          )}
+
+          <button
+            onClick={deploy}
+            disabled={busy || !slug}
+            className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2"
+          >
+            {busy ? <><Ico.Spinner /> Deploying...</> : 'Deploy to GitHub Pages'}
+          </button>
+        </div>
+      )}
+
+      {showPreview && html && (
+        <PreviewModal html={html} onClose={() => setShowPreview(false)} />
+      )}
+    </div>
+  );
+}
+
+// ── Dashboards Tab ────────────────────────────────────────────────────────────
+
+function DashboardsTab({ config, refreshKey }) {
+  const [slugs, setSlugs]       = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState('');
+  const [deleting, setDeleting] = useState(null);
+  const [confirmDel, setConfirmDel] = useState(null);
+  const [copied, setCopied]     = useState(null);
+  const [redeploySlug, setRedeploySlug] = useState(null);
+
+  async function load() {
+    setLoading(true);
+    setError('');
+    try {
+      const items = await ghListDir(config.token, config.repo, 'dashboards');
+      setSlugs(items.filter(d => d.type === 'dir').map(d => d.name).sort());
+    } catch {
+      setError('Failed to load dashboards');
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  useEffect(() => { load(); }, [refreshKey, config]);
+
+  async function handleDelete(slug) {
+    setDeleting(slug);
+    try {
+      const path = `dashboards/${slug}/index.html`;
+      const file = await ghGet(config.token, config.repo, path);
+      if (file?.sha) await ghDelete(config.token, config.repo, path, file.sha);
+      setSlugs(prev => prev.filter(s => s !== slug));
+    } catch {
+      setError('Delete failed — try again');
+    } finally {
+      setDeleting(null);
+      setConfirmDel(null);
+    }
+  }
+
+  async function handleCopy(slug) {
+    const url = ghpUrl(config.repo, slug);
+    const ok = await copyText(url);
+    if (ok) { setCopied(slug); setTimeout(() => setCopied(null), 2000); }
+  }
+
+  // ── Redeploy modal (upload new HTML to same slug)
+  const RedeployModal = ({ slug }) => {
+    const [html, setHtml]   = useState(null);
+    const [fname, setFname] = useState('');
+    const [busy, setBusy]   = useState(false);
+    const [done, setDone]   = useState(false);
+    const [err, setErr]     = useState('');
+    const ref = useRef();
+
+    function loadFile(file) {
+      if (!file?.name.toLowerCase().endsWith('.html')) return setErr('Please select an HTML file');
+      setErr('');
+      const reader = new FileReader();
+      reader.onload = e => { setHtml(e.target.result); setFname(file.name); };
+      reader.readAsText(file, 'UTF-8');
+    }
+
+    async function submit() {
+      if (!html) return;
+      setBusy(true);
+      setErr('');
+      const path = `dashboards/${slug}/index.html`;
+      try {
+        const existing = await ghGet(config.token, config.repo, path);
+        const res = await ghPut(config.token, config.repo, path, html, existing?.sha, `redeploy: ${slug}`);
+        if (!res.ok) { const d = await res.json().catch(() => ({})); setErr(d.message || 'Failed'); }
+        else setDone(true);
+      } catch { setErr('Network error'); }
+      finally { setBusy(false); }
+    }
+
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+        <div className="w-full max-w-md bg-slate-800 border border-slate-700 rounded-2xl p-6">
+          <div className="flex items-center justify-between mb-5">
+            <h3 className="font-semibold text-slate-100">Re-deploy "{formatSlug(slug)}"</h3>
+            <button onClick={() => setRedeploySlug(null)} className="text-slate-400 hover:text-slate-100"><Ico.X /></button>
+          </div>
+
+          {done ? (
+            <div className="text-center py-4">
+              <div className="w-12 h-12 bg-green-500/15 rounded-full flex items-center justify-center mx-auto mb-3">
+                <Ico.Check />
+              </div>
+              <p className="text-green-400 font-medium mb-1">Re-deployed!</p>
+              <p className="text-slate-500 text-sm mb-4">GitHub Pages may take ~30s to update</p>
+              <button onClick={() => setRedeploySlug(null)} className="text-sm text-indigo-400 hover:text-indigo-300">Close</button>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div
+                onClick={() => ref.current?.click()}
+                className="border-2 border-dashed border-slate-600 rounded-xl p-6 text-center cursor-pointer hover:border-slate-500 hover:bg-slate-700/30 transition-all"
+              >
+                <input ref={ref} type="file" accept=".html,.htm" className="hidden" onChange={e => loadFile(e.target.files[0])} />
+                {html ? (
+                  <p className="text-slate-200 text-sm">{fname} — click to change</p>
+                ) : (
+                  <>
+                    <div className="text-slate-400 flex justify-center mb-2"><Ico.Upload /></div>
+                    <p className="text-slate-400 text-sm">Select new HTML file</p>
+                  </>
+                )}
+              </div>
+              {err && <div className="bg-red-950 border border-red-800 text-red-300 text-sm rounded-lg px-4 py-3">{err}</div>}
+              <button
+                onClick={submit}
+                disabled={!html || busy}
+                className="w-full bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed text-white font-medium py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2"
+              >
+                {busy ? <><Ico.Spinner /> Deploying...</> : 'Update Dashboard'}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-20">
+        <Ico.Spinner cls="w-8 h-8 text-indigo-400" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="max-w-2xl mx-auto">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-slate-400">
+          {slugs.length === 0 ? 'No dashboards yet' : `${slugs.length} dashboard${slugs.length !== 1 ? 's' : ''}`}
+        </p>
+        <button onClick={load} title="Refresh" className="text-slate-400 hover:text-slate-200 transition-colors p-1.5 hover:bg-slate-700 rounded-lg">
+          <Ico.Refresh />
+        </button>
+      </div>
+
+      {error && (
+        <div className="bg-red-950 border border-red-800 text-red-300 text-sm rounded-xl px-4 py-3 mb-4">
+          {error}
+        </div>
+      )}
+
+      {slugs.length === 0 && !error && (
+        <div className="text-center py-16 text-slate-500">
+          <p className="mb-1">No dashboards deployed yet.</p>
+          <p className="text-sm">Go to Deploy to upload your first dashboard.</p>
+        </div>
+      )}
+
+      <div className="space-y-2">
+        {slugs.map(slug => {
+          const url = ghpUrl(config.repo, slug);
+          const isDeleting = deleting === slug;
+          const isConfirming = confirmDel === slug;
+
+          return (
+            <div key={slug} className="bg-slate-800 border border-slate-700 rounded-xl px-4 py-3.5 flex items-center gap-3">
+              {/* Info */}
+              <div className="flex-1 min-w-0">
+                <p className="font-medium text-slate-100 text-sm">{formatSlug(slug)}</p>
+                <p className="text-xs text-slate-500 truncate font-mono mt-0.5">{url}</p>
+              </div>
+
+              {/* Actions */}
+              <div className="flex items-center gap-1 shrink-0">
+                <button
+                  onClick={() => handleCopy(slug)}
+                  title="Copy URL"
+                  className="p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-700 rounded-lg transition-colors"
+                >
+                  {copied === slug ? <Ico.Check /> : <Ico.Copy />}
+                </button>
+                <a
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title="Open dashboard"
+                  className="p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-700 rounded-lg transition-colors"
+                >
+                  <Ico.Link />
+                </a>
+                <button
+                  onClick={() => setRedeploySlug(slug)}
+                  title="Re-deploy"
+                  className="p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-700 rounded-lg transition-colors"
+                >
+                  <Ico.Refresh />
+                </button>
+
+                {isConfirming ? (
+                  <div className="flex items-center gap-1.5 ml-1">
+                    <button
+                      onClick={() => handleDelete(slug)}
+                      disabled={isDeleting}
+                      className="text-xs bg-red-600 hover:bg-red-500 disabled:opacity-60 text-white px-2.5 py-1.5 rounded-lg transition-colors flex items-center gap-1"
+                    >
+                      {isDeleting ? <Ico.Spinner cls="w-3 h-3" /> : null}
+                      {isDeleting ? '' : 'Delete'}
+                    </button>
+                    <button
+                      onClick={() => setConfirmDel(null)}
+                      className="text-xs text-slate-400 hover:text-slate-200 px-2 py-1.5 transition-colors"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDel(slug)}
+                    title="Delete"
+                    className="p-2 text-slate-400 hover:text-red-400 hover:bg-slate-700 rounded-lg transition-colors"
+                  >
+                    <Ico.Trash />
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {redeploySlug && <RedeployModal slug={redeploySlug} />}
+    </div>
+  );
+}
+
+// ── Settings Modal ────────────────────────────────────────────────────────────
+
+function SettingsModal({ config, onUpdate, onClose }) {
+  const [token, setToken]   = useState(config.token);
+  const [repo, setRepo]     = useState(config.repo);
+  const [showTok, setShowTok] = useState(false);
+
+  function save() {
+    if (token.trim() && repo.trim() && repo.includes('/')) {
+      onUpdate({ token: token.trim(), repo: repo.trim() });
+      onClose();
+    }
+  }
+
+  function reset() {
+    if (confirm('Reset all settings? You will need to reconfigure the app.')) {
+      onUpdate(null);
+    }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+      <div className="w-full max-w-md bg-slate-800 border border-slate-700 rounded-2xl p-6">
+        <div className="flex items-center justify-between mb-5">
+          <h2 className="text-lg font-semibold text-white">Settings</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-100 transition-colors"><Ico.X /></button>
+        </div>
+
+        <div className="space-y-4 mb-6">
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">GitHub Token</label>
+            <div className="relative">
+              <input
+                type={showTok ? 'text' : 'password'}
+                value={token}
+                onChange={e => setToken(e.target.value)}
+                className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 pr-11 text-slate-100 font-mono text-sm focus:outline-none focus:border-indigo-500"
+              />
+              <button
+                type="button"
+                onClick={() => setShowTok(v => !v)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-500 hover:text-slate-300"
+              >
+                <Ico.Eye off={showTok} />
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-300 mb-1.5">Destination Repo</label>
+            <input
+              type="text"
+              value={repo}
+              onChange={e => setRepo(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-600 rounded-lg px-4 py-2.5 text-slate-100 font-mono text-sm focus:outline-none focus:border-indigo-500"
+            />
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <button onClick={reset} className="text-sm text-red-400 hover:text-red-300 transition-colors">
+            Reset all settings
+          </button>
+          <button
+            onClick={save}
+            className="bg-indigo-600 hover:bg-indigo-500 text-white font-medium px-5 py-2 rounded-lg transition-colors text-sm"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ── App Root ──────────────────────────────────────────────────────────────────
+
+function App() {
+  const [config, setConfig] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('tdd_config') || 'null'); }
+    catch { return null; }
+  });
+  const [tab, setTab]               = useState('deploy');
+  const [showSettings, setShowSettings] = useState(false);
+  const [deployKey, setDeployKey]   = useState(0);
+
+  function saveConfig(c) {
+    if (c) localStorage.setItem('tdd_config', JSON.stringify(c));
+    else localStorage.removeItem('tdd_config');
+    setConfig(c);
+  }
+
+  if (!config) return <SetupScreen onSave={saveConfig} />;
+
+  return (
+    <div className="min-h-screen bg-slate-900">
+      {/* ── Header */}
+      <header className="sticky top-0 z-40 bg-slate-900/95 backdrop-blur border-b border-slate-800">
+        <div className="max-w-3xl mx-auto px-4 h-14 flex items-center justify-between gap-4">
+          {/* Brand */}
+          <div className="flex items-center gap-2.5 shrink-0">
+            <div className="w-8 h-8 bg-indigo-600 rounded-lg flex items-center justify-center shadow-md">
+              <Ico.Logo />
+            </div>
+            <span className="font-semibold text-white text-sm hidden sm:block">Dashboard Deployer</span>
+          </div>
+
+          {/* Tabs + Settings */}
+          <div className="flex items-center gap-2">
+            <nav className="flex bg-slate-800 rounded-lg p-0.5 border border-slate-700">
+              {['deploy', 'dashboards'].map(t => (
+                <button
+                  key={t}
+                  onClick={() => setTab(t)}
+                  className={[
+                    'px-4 py-1.5 rounded-md text-sm font-medium capitalize transition-colors',
+                    tab === t
+                      ? 'bg-indigo-600 text-white shadow-sm'
+                      : 'text-slate-400 hover:text-slate-200',
+                  ].join(' ')}
+                >
+                  {t}
+                </button>
+              ))}
+            </nav>
+            <button
+              onClick={() => setShowSettings(true)}
+              title="Settings"
+              className="p-2 text-slate-400 hover:text-slate-100 hover:bg-slate-800 rounded-lg transition-colors"
+            >
+              <Ico.Settings />
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* ── Repo badge */}
+      <div className="max-w-3xl mx-auto px-4 pt-3 pb-0">
+        <p className="text-xs text-slate-600 font-mono">
+          Deploying to{' '}
+          <a
+            href={`https://github.com/${config.repo}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-slate-500 hover:text-indigo-400 transition-colors"
+          >
+            {config.repo}
+          </a>
+        </p>
+      </div>
+
+      {/* ── Content */}
+      <main className="max-w-3xl mx-auto px-4 py-6">
+        {tab === 'deploy'
+          ? <DeployTab config={config} onDeployed={() => setDeployKey(k => k + 1)} />
+          : <DashboardsTab config={config} refreshKey={deployKey} />
+        }
+      </main>
+
+      {showSettings && (
+        <SettingsModal
+          config={config}
+          onUpdate={saveConfig}
+          onClose={() => setShowSettings(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
