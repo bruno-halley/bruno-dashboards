@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Olist Operations Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.5.0/dist/chart.umd.js" integrity="sha384-iU8HYtnGQ8Cy4zl7gbNMOhsDTTKX02BTXptVP/vqAWIaTfM7isw76iyZCsjL2eVi" crossorigin="anonymous"></script>
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f0f4ff; color: #1a1a2e; padding: 24px; }
+  h1 { font-size: 1.4rem; font-weight: 700; margin-bottom: 4px; }
+  .subtitle { font-size: 0.82rem; color: #888; margin-bottom: 24px; }
+  .kpis { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px; }
+  .kpi { background: #fff; border-radius: 12px; padding: 18px 20px; border: 1px solid #e0e5f7; }
+  .kpi-label { font-size: 0.72rem; color: #999; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
+  .kpi-value { font-size: 1.75rem; font-weight: 700; }
+  .kpi-value.green { color: #06d6a0; }
+  .kpi-value.red { color: #ef476f; }
+  .charts { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .card { background: #fff; border-radius: 12px; padding: 20px; border: 1px solid #e0e5f7; }
+  .card.wide { grid-column: 1 / -1; }
+  .card-title { font-size: 0.82rem; font-weight: 600; color: #555; margin-bottom: 14px; }
+  .chart-wrap { height: 210px; position: relative; }
+  .chart-wrap.tall { height: 260px; }
+</style>
+</head>
+<body>
+<h1>Olist Operations Dashboard</h1>
+<p class="subtitle">teramot-demo-datasets · olist-marketplace</p>
+
+<div class="kpis">
+  <div class="kpi"><div class="kpi-label">Delivered</div><div class="kpi-value green">96,478</div></div>
+  <div class="kpi"><div class="kpi-label">Canceled</div><div class="kpi-value red">625</div></div>
+  <div class="kpi"><div class="kpi-label">Top State</div><div class="kpi-value">SP</div></div>
+  <div class="kpi"><div class="kpi-label">Pay in 1x</div><div class="kpi-value">52,546</div></div>
+</div>
+
+<div class="charts">
+  <div class="card">
+    <div class="card-title">Order Status</div>
+    <div class="chart-wrap"><canvas id="c-status"></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-title">Payment Installments</div>
+    <div class="chart-wrap"><canvas id="c-installments"></canvas></div>
+  </div>
+  <div class="card wide">
+    <div class="card-title">Top 10 States by Customers</div>
+    <div class="chart-wrap tall"><canvas id="c-states"></canvas></div>
+  </div>
+</div>
+
+<script>
+new Chart(document.getElementById('c-status'), {
+  type: 'doughnut',
+  data: {
+    labels: ['Delivered', 'Shipped', 'Canceled', 'Unavailable', 'Invoiced', 'Processing'],
+    datasets: [{ data: [96478, 1107, 625, 609, 314, 301], backgroundColor: ['#06d6a0','#4361ee','#ef476f','#ffd166','#8ecae6','#a8dadc'], borderWidth: 2, borderColor: '#fff' }]
+  },
+  options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right', labels: { font: { size: 11 }, boxWidth: 12 } } } }
+});
+
+new Chart(document.getElementById('c-installments'), {
+  type: 'bar',
+  data: {
+    labels: ['1x','2x','3x','4x','5x','6x','7x','8x','9x','10x','11x','12x'],
+    datasets: [{ data: [52546,12413,10461,7098,5239,3920,1626,4268,644,5328,23,133], backgroundColor: '#4361ee', borderRadius: 5 }]
+  },
+  options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { grid: { color: '#f0f0f0' } }, x: { grid: { display: false } } } }
+});
+
+new Chart(document.getElementById('c-states'), {
+  type: 'bar',
+  data: {
+    labels: ['SP','RJ','MG','RS','PR','SC','BA','DF','ES','GO'],
+    datasets: [{ data: [41746,12852,11635,5466,5045,3637,3380,2140,2033,2020], backgroundColor: '#06d6a0', borderRadius: 5 }]
+  },
+  options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } }, scales: { y: { grid: { color: '#f0f0f0' } }, x: { grid: { display: false } } } }
+});
+</script>
+</body>
+</html>
